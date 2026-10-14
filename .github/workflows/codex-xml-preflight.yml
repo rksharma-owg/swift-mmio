@@ -1,0 +1,267 @@
+name: XML parser preflight
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Full contribution commit SHA
+        required: true
+        type: string
+      base:
+        description: Full upstream main SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Linux release (${{ matrix.swift }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        swift: [nightly-main, nightly-6.4.x]
+    container:
+      image: swiftlang/swift:${{ matrix.swift }}-jammy
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - name: Versions
+        run: swift --version && clang --version
+      - name: Focused regression and full release suite
+        working-directory: code
+        run: |
+          set -euo pipefail
+          swift test --configuration release --filter SVDXMLParsingTests
+          swift test --configuration release
+  macos:
+    name: macOS ARM64 release (Swift 6.4)
+    runs-on: xcode-27
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - name: Verify Xcode and Swift 6.4
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun swift --version | tee swift-version.txt
+          grep -E 'Swift version 6\.4' swift-version.txt
+          xcrun clang --version
+      - name: Focused regression and full release suite
+        working-directory: code
+        run: |
+          set -euo pipefail
+          xcrun swift test --configuration release --filter SVDXMLParsingTests
+          xcrun swift test --configuration release
+  apple-sdk:
+    name: Apple SDK (${{ matrix.platform }}, Swift 6.4)
+    runs-on: xcode-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [iOS, tvOS, xrOS, watchOS]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - name: Verify Xcode and Swift 6.4
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun swift --version | tee swift-version.txt
+          grep -E 'Swift version 6\.4' swift-version.txt
+          xcodebuild -showsdks
+      - name: Build package for Apple platform
+        working-directory: code
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          xcodebuild build -scheme swift-mmio-Package -destination "generic/platform=$PLATFORM" CODE_SIGNING_ALLOWED=NO
+  soundness:
+    name: Soundness (${{ matrix.check }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {check: format, image: 'swift:6.3-noble'}
+          - {check: docs, image: 'swift:6.4-noble'}
+          - {check: license, image: 'ubuntu:noble'}
+          - {check: language, image: 'ubuntu:noble'}
+          - {check: symlinks, image: 'ubuntu:noble'}
+          - {check: shell, image: 'ubuntu:noble'}
+          - {check: yaml, image: 'ubuntu:noble'}
+          - {check: python, image: 'ubuntu:noble'}
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install git
+        run: apt-get -qq update && apt-get -qq install -y git ca-certificates
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - uses: actions/checkout@v7
+        with:
+          repository: swiftlang/github-workflows
+          ref: a0e26726cfe9f46c9eec63f7af64060bb733761f
+          path: checks
+          persist-credentials: false
+      - name: Verify validation scripts revision
+        working-directory: checks
+        run: test "$(git rev-parse HEAD)" = a0e26726cfe9f46c9eec63f7af64060bb733761f
+      - name: Run upstream soundness check
+        working-directory: code
+        env:
+          CHECK: ${{ matrix.check }}
+          UNACCEPTABLE_WORD_LIST: blacklist whitelist slave master sane sanity insane insanity kill killed killing hang hung hanged hanging
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          scripts="$GITHUB_WORKSPACE/checks/.github/workflows/scripts"
+          case "$CHECK" in
+            format) bash "$scripts/check-swift-format.sh" ;;
+            docs)
+              bash "$scripts/check-docs.sh" --additional-docc-arguments --enable-experimental-combined-documentation --enable-experimental-overloaded-symbol-presentation --symbol-graph-minimum-access-level public
+              ;;
+            license) bash "$scripts/check-license-header.sh" ;;
+            language) bash "$scripts/check-unacceptable-language.sh" ;;
+            symlinks) bash "$scripts/check-broken-symlinks.sh" ;;
+            shell)
+              apt-get -qq install -y shellcheck
+              git ls-files -z '*.sh' | xargs -0 --no-run-if-empty shellcheck
+              ;;
+            yaml)
+              apt-get -qq install -y yamllint
+              if test ! -f .yamllint.yml; then cp "$GITHUB_WORKSPACE/checks/.github/workflows/configs/yamllint.yml" .yamllint.yml; fi
+              yamllint --strict --config-file .yamllint.yml .
+              ;;
+            python)
+              apt-get -qq install -y python3 python3-venv
+              python3 -m venv "$RUNNER_TEMP/flake8-env"
+              "$RUNNER_TEMP/flake8-env/bin/pip" install flake8 flake8-import-order
+              if test ! -f .flake8; then cp "$GITHUB_WORKSPACE/checks/.github/workflows/configs/.flake8" .flake8; fi
+              "$RUNNER_TEMP/flake8-env/bin/flake8" .
+              ;;
+          esac
+  format-config:
+    name: Format configuration unchanged
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - name: Compare with target configuration
+        working-directory: code
+        env:
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          git show "$BASE_SHA:.swift-format" > "$RUNNER_TEMP/upstream-swift-format"
+          diff .swift-format "$RUNNER_TEMP/upstream-swift-format"
