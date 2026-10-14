@@ -1,0 +1,95 @@
+name: XML parser documentation baseline
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Full contribution commit SHA
+        required: true
+        type: string
+      base:
+        description: Full upstream main SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  soundness:
+    name: Soundness (${{ matrix.check }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {check: docs, image: 'swift:6.4-noble'}
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install git
+        run: apt-get -qq update && apt-get -qq install -y git ca-certificates
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: code
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tested commit and upstream baseline
+        working-directory: code
+        env:
+          TESTED_HEAD: ${{ inputs.head }}
+          BASE_SHA: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          [[ "$TESTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$TESTED_HEAD"
+          git fetch https://github.com/apple/swift-mmio.git main
+          test "$(git rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          printf 'TESTED_HEAD=%s\nBASE_SHA=%s\nMERGE_EQUIVALENT=%s\n' "$TESTED_HEAD" "$BASE_SHA" "$TESTED_HEAD"
+      - uses: actions/checkout@v7
+        with:
+          repository: swiftlang/github-workflows
+          ref: a0e26726cfe9f46c9eec63f7af64060bb733761f
+          path: checks
+          persist-credentials: false
+      - name: Verify validation scripts revision
+        working-directory: checks
+        run: test "$(git rev-parse HEAD)" = a0e26726cfe9f46c9eec63f7af64060bb733761f
+      - name: Run upstream soundness check
+        working-directory: code
+        env:
+          CHECK: ${{ matrix.check }}
+          UNACCEPTABLE_WORD_LIST: blacklist whitelist slave master sane sanity insane insanity kill killed killing hang hung hanged hanging
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          scripts="$GITHUB_WORKSPACE/checks/.github/workflows/scripts"
+          case "$CHECK" in
+            format) bash "$scripts/check-swift-format.sh" ;;
+            docs)
+              bash "$scripts/check-docs.sh" --additional-docc-arguments --enable-experimental-combined-documentation --enable-experimental-overloaded-symbol-presentation --symbol-graph-minimum-access-level public
+              ;;
+            license) bash "$scripts/check-license-header.sh" ;;
+            language) bash "$scripts/check-unacceptable-language.sh" ;;
+            symlinks) bash "$scripts/check-broken-symlinks.sh" ;;
+            shell)
+              apt-get -qq install -y shellcheck
+              git ls-files -z '*.sh' | xargs -0 --no-run-if-empty shellcheck
+              ;;
+            yaml)
+              apt-get -qq install -y yamllint
+              if test ! -f .yamllint.yml; then cp "$GITHUB_WORKSPACE/checks/.github/workflows/configs/yamllint.yml" .yamllint.yml; fi
+              yamllint --strict --config-file .yamllint.yml .
+              ;;
+            python)
+              apt-get -qq install -y python3 python3-venv
+              python3 -m venv "$RUNNER_TEMP/flake8-env"
+              "$RUNNER_TEMP/flake8-env/bin/pip" install flake8 flake8-import-order
+              if test ! -f .flake8; then cp "$GITHUB_WORKSPACE/checks/.github/workflows/configs/.flake8" .flake8; fi
+              "$RUNNER_TEMP/flake8-env/bin/flake8" .
+              ;;
+          esac
